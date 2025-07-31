@@ -29,7 +29,8 @@ impl RedisConfig {
     /// Cria configuração a partir de variáveis de ambiente
     pub fn from_env() -> Self {
         Self {
-            url: env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string()),
+            url: env::var("REDIS_URL")
+                .unwrap_or_else(|_| "redis://10.105.130.198:6379".to_string()),
             max_retries: env::var("REDIS_MAX_RETRIES")
                 .unwrap_or_else(|_| "3".to_string())
                 .parse()
@@ -264,7 +265,10 @@ impl RedisClient {
     }
 
     /// Método para carregar dados BTC por chave
-    pub fn get_btc_data(&self, key: &str) -> Result<Option<CsvBtcFile>, Box<dyn std::error::Error>> {
+    pub fn get_btc_data(
+        &self,
+        key: &str,
+    ) -> Result<Option<CsvBtcFile>, Box<dyn std::error::Error>> {
         let mut con = self.client.get_connection()?;
 
         match con.get::<String, String>(key.to_string()) {

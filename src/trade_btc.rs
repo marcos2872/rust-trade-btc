@@ -128,9 +128,13 @@ impl TradeSimulator {
         config: TradeConfig,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let start_time =
-            DateTime::parse_from_rfc3339("2018-01-01T00:00:00+00:00")?.with_timezone(&Utc);
+            DateTime::parse_from_rfc3339("2025-01-01T00:00:00+00:00")?.with_timezone(&Utc);
+        // let start_time =
+        //     DateTime::parse_from_rfc3339("2018-01-01T00:00:00+00:00")?.with_timezone(&Utc);
         let end_time =
-            DateTime::parse_from_rfc3339("2025-07-22T18:43:00+00:00")?.with_timezone(&Utc);
+            DateTime::parse_from_rfc3339("2025-03-22T18:43:00+00:00")?.with_timezone(&Utc);
+        // let end_time =
+        //     DateTime::parse_from_rfc3339("2025-07-22T18:43:00+00:00")?.with_timezone(&Utc);
 
         // Estimar total de registros (aproximadamente um por hora)
         let duration = end_time.signed_duration_since(start_time);
@@ -219,7 +223,7 @@ impl TradeSimulator {
             }
 
             // Avançar tempo (simulando 1 hora por tick)
-            self.current_time = self.current_time + chrono::Duration::hours(1);
+            self.current_time = self.current_time + chrono::Duration::minutes(1);
             self.data_index += 1;
 
             // Pequena pausa para visualização
@@ -810,11 +814,11 @@ pub fn run_trade_simulation() -> Result<(), Box<dyn std::error::Error>> {
 
     // Configuração personalizada do trade DCA
     let config = TradeConfig {
-        initial_balance: 10000.0,
-        max_loss_percentage: 25.0,
+        initial_balance: 100.0,
+        max_loss_percentage: 50.0,
         trade_percentage: 5.0,              // 10% do saldo por compra
         stop_loss_percentage: 0.0,          // NÃO usado - sem stop loss
-        take_profit_percentage: 5.0,        // Vender APENAS com 15% de lucro
+        take_profit_percentage: 6.0,        // Vender APENAS com 15% de lucro
         percentual_queda_para_comprar: 3.0, // Comprar quando cair 5% do pico
         preco_inicial_de_compra: None,      // Começar na primeira oportunidade
     };
