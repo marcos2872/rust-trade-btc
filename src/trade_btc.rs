@@ -815,7 +815,7 @@ pub fn run_trade_simulation() -> Result<(), Box<dyn std::error::Error>> {
         trade_percentage: 5.0,              // 10% do saldo por compra
         stop_loss_percentage: 0.0,          // NÃO usado - sem stop loss
         take_profit_percentage: 5.0,        // Vender APENAS com 15% de lucro
-        percentual_queda_para_comprar: 4.0, // Comprar quando cair 5% do pico
+        percentual_queda_para_comprar: 3.0, // Comprar quando cair 5% do pico
         preco_inicial_de_compra: None,      // Começar na primeira oportunidade
     };
 
