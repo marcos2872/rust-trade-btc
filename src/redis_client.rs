@@ -29,8 +29,7 @@ impl RedisConfig {
     /// Cria configuração a partir de variáveis de ambiente
     pub fn from_env() -> Self {
         Self {
-            url: env::var("REDIS_URL")
-                .unwrap_or_else(|_| "redis://10.105.130.198:6379".to_string()),
+            url: env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string()),
             max_retries: env::var("REDIS_MAX_RETRIES")
                 .unwrap_or_else(|_| "3".to_string())
                 .parse()
@@ -106,8 +105,8 @@ impl RedisClient {
             println!("🔄 Tentativa {} de {}", attempt, self.config.max_retries);
 
             match self.client.get_connection() {
-                Ok(mut con) => match con.ping() {
-                    Ok(()) => {
+                Ok(mut con) => match redis::cmd("PING").query::<String>(&mut con) {
+                    Ok(_) => {
                         println!("✅ Redis conectado com sucesso na tentativa {}", attempt);
                         return Ok(());
                     }
@@ -142,7 +141,8 @@ impl RedisClient {
     /// Executa PING
     pub fn ping(&self) -> Result<String, RedisClientError> {
         let mut con = self.get_connection()?;
-        con.ping()
+        redis::cmd("PING")
+            .query::<String>(&mut con)
             .map_err(|e| RedisClientError::OperationError(format!("PING falhou: {}", e)))
     }
 
@@ -249,6 +249,25 @@ impl RedisClient {
         let key = format!("btc_{}", index);
 
         match con.get::<String, String>(key) {
+            Ok(json_data) => {
+                let record: CsvBtcFile = serde_json::from_str(&json_data)?;
+                Ok(Some(record))
+            }
+            Err(e) => {
+                if e.kind() == redis::ErrorKind::TypeError {
+                    Ok(None)
+                } else {
+                    Err(e.into())
+                }
+            }
+        }
+    }
+
+    /// Método para carregar dados BTC por chave
+    pub fn get_btc_data(&self, key: &str) -> Result<Option<CsvBtcFile>, Box<dyn std::error::Error>> {
+        let mut con = self.client.get_connection()?;
+
+        match con.get::<String, String>(key.to_string()) {
             Ok(json_data) => {
                 let record: CsvBtcFile = serde_json::from_str(&json_data)?;
                 Ok(Some(record))

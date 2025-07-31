@@ -9,14 +9,24 @@ use std::time::Instant;
 fn main() {
     let args: Vec<String> = env::args().collect();
 
-    if args.len() > 1 && args[1] == "simulate" {
-        // Executar simulação de trade
-        println!("🎮 Iniciando simulação de trade...");
-        if let Err(e) = trade_btc::run_trade_simulation() {
-            eprintln!("❌ Erro na simulação: {}", e);
-            std::process::exit(1);
+    if args.len() > 1 {
+        match args[1].as_str() {
+            "simulate" => {
+                // Executar simulação de trade original
+                println!("🎮 Iniciando simulação de trade tradicional...");
+                if let Err(e) = trade_btc::run_trade_simulation() {
+                    eprintln!("❌ Erro na simulação: {}", e);
+                    std::process::exit(1);
+                }
+                return;
+            }
+            _ => {
+                println!("❌ Comando não reconhecido. Use:");
+                println!("  cargo run simulate  - Simulação tradicional DCA");
+                println!("  cargo run advanced  - Simulação avançada com indicadores");
+                std::process::exit(1);
+            }
         }
-        return;
     }
 
     // Código original para carregar dados CSV
@@ -45,7 +55,9 @@ fn main() {
             let duration = start_time.elapsed();
             println!("⏱️  Tempo de salvamento no Redis: {:.2?}", duration);
 
-            println!("\n💡 Para executar a simulação de trade, use: cargo run simulate");
+            println!("\n💡 Comandos disponíveis:");
+            println!("  cargo run simulate  - Simulação tradicional DCA");
+            println!("  cargo run advanced  - Simulação avançada com indicadores técnicos");
         }
         Err(err) => {
             println!("Error: {}", err);

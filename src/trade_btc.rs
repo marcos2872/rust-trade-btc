@@ -117,6 +117,9 @@ pub struct TradeSimulator {
     transaction_history: Vec<Transaction>, // Histórico completo de transações
     next_order_id: u32,        // ID da próxima ordem
     next_transaction_id: u32,  // ID da próxima transação
+    // Contador de quedas para comprar apenas a cada 3 quedas
+    quedas_detectadas: u32,   // Contador de quedas consecutivas
+    quedas_para_comprar: u32, // Comprar apenas a cada N quedas
 }
 
 impl TradeSimulator {
@@ -145,6 +148,8 @@ impl TradeSimulator {
             transaction_history: Vec::new(),
             next_order_id: 1,
             next_transaction_id: 1,
+            quedas_detectadas: 0,
+            quedas_para_comprar: 3, // Comprar apenas a cada 3 quedas
             config,
             current_time: start_time,
             end_time,
@@ -170,15 +175,46 @@ impl TradeSimulator {
         let start_simulation = Instant::now();
         let mut last_display = Instant::now();
 
+        let mut consecutive_no_data = 0;
+        const MAX_NO_DATA_ITERATIONS: usize = 1000; // Parar após 1000 iterações sem dados
+
         while self.current_time < self.end_time {
             // Buscar dados do Redis para o índice atual
             if let Some(btc_data) = self.get_current_btc_data()? {
+                consecutive_no_data = 0; // Reset contador quando encontra dados
                 self.process_tick(&btc_data)?;
 
                 // Atualizar display a cada 5 segundos de simulação
                 if last_display.elapsed() >= Duration::from_secs(5) {
                     self.display_status(&btc_data);
                     last_display = Instant::now();
+                }
+            } else {
+                consecutive_no_data += 1;
+
+                // Log a cada 100 iterações sem dados
+                if consecutive_no_data % 100 == 0 {
+                    println!(
+                        "⚠️  {} iterações sem dados - Índice: {} - Data: {} - Progresso: {:.1}%",
+                        consecutive_no_data,
+                        self.data_index,
+                        self.current_time.format("%Y-%m-%d %H:%M"),
+                        (self.data_index as f64 / self.total_records as f64) * 100.0
+                    );
+                }
+
+                // Parar se muitas iterações consecutivas sem dados
+                if consecutive_no_data >= MAX_NO_DATA_ITERATIONS {
+                    println!(
+                        "\n🛑 Simulação parada: {} iterações consecutivas sem dados no Redis!",
+                        MAX_NO_DATA_ITERATIONS
+                    );
+                    println!("📊 Último índice tentado: {}", self.data_index);
+                    println!(
+                        "📅 Última data processada: {}",
+                        self.current_time.format("%Y-%m-%d %H:%M")
+                    );
+                    break;
                 }
             }
 
@@ -190,10 +226,10 @@ impl TradeSimulator {
             thread::sleep(Duration::from_millis(10));
 
             // Verificar se deve parar por perda máxima
-            if self.should_stop_trading() {
-                println!("\n🛑 Simulação parada: perda máxima atingida!");
-                break;
-            }
+            // if self.should_stop_trading() {
+            //     println!("\n🛑 Simulação parada: perda máxima atingida!");
+            //     break;
+            // }
         }
 
         println!("\n{}", "=".repeat(80));
@@ -228,13 +264,55 @@ impl TradeSimulator {
             // Se não tem BTC e nunca comprou, comprar na primeira oportunidade
             if self.saldo_btc == 0.0 && self.stats.total_trades == 0 {
                 should_buy = true;
+                println!("🎯 PRIMEIRA COMPRA detectada!");
             }
             // Se houve uma queda >= percentual_queda_para_comprar desde o pico recente
             else if self.preco_pico_recente > 0.0 {
                 let queda_percentual =
                     ((self.preco_pico_recente - current_price) / self.preco_pico_recente) * 100.0;
                 if queda_percentual >= self.config.percentual_queda_para_comprar {
-                    should_buy = true;
+                    let queda_dupla = self.config.percentual_queda_para_comprar * 2.0;
+
+                    // Verificar se é uma queda de emergência (dobro do percentual)
+                    if queda_percentual >= queda_dupla {
+                        should_buy = true;
+                        self.quedas_detectadas = 0; // Reset contador após compra de emergência
+                        println!(
+                            "🚨 COMPRA DE EMERGÊNCIA! Queda -{:.2}% (>= -{:.1}% dobro do gatilho)",
+                            queda_percentual, queda_dupla
+                        );
+                        println!(
+                            "⚡ EXECUTANDO COMPRA IMEDIATA do pico ${:.2} para ${:.2}",
+                            self.preco_pico_recente, current_price
+                        );
+                    } else {
+                        // Lógica normal: incrementar contador de quedas
+                        self.quedas_detectadas += 1;
+
+                        println!(
+                            "📉 QUEDA DETECTADA #{}: -{:.2}% do pico ${:.2} para ${:.2}",
+                            self.quedas_detectadas,
+                            queda_percentual,
+                            self.preco_pico_recente,
+                            current_price
+                        );
+
+                        // Comprar apenas se atingiu o número necessário de quedas
+                        if self.quedas_detectadas >= self.quedas_para_comprar {
+                            should_buy = true;
+                            self.quedas_detectadas = 0; // Reset contador após compra
+                            println!(
+                                "✅ COMPRA LIBERADA: {} quedas atingidas!",
+                                self.quedas_para_comprar
+                            );
+                        } else {
+                            println!(
+                                "⏳ AGUARDANDO: {}/{} quedas para próxima compra (ou queda -{:.1}% para emergência)",
+                                self.quedas_detectadas, self.quedas_para_comprar, queda_dupla
+                            );
+                        }
+                    }
+
                     // Reset do pico após detectar a queda
                     self.preco_pico_recente = current_price;
                 }
@@ -309,7 +387,11 @@ impl TradeSimulator {
         self.stats.total_trades += 1;
 
         let tipo_compra = if self.buy_orders.len() == 1 {
-            "PRIMEIRA COMPRA"
+            if self.stats.total_trades == 1 {
+                "PRIMEIRA COMPRA"
+            } else {
+                "COMPRA DE EMERGÊNCIA"
+            }
         } else {
             "COMPRA POR QUEDA"
         };
@@ -395,16 +477,34 @@ impl TradeSimulator {
         // Adicionar ao histórico
         self.transaction_history.push(transaction);
 
+        // Calcular tempo de holding
+        let holding_duration = self.current_time.signed_duration_since(order.buy_time);
+        let holding_days = holding_duration.num_days();
+        let holding_hours = holding_duration.num_hours() % 24;
+
         println!("\n{}", "=".repeat(80));
-        println!("💚 VENDA COM LUCRO - Ordem #{}", order.id);
+        println!("💚 VENDA COM LUCRO - Ordem de Compra #{} VENDIDA", order.id);
         println!("{}", "-".repeat(80));
+        println!(
+            "📅 Comprada em: {} - Vendida em: {}",
+            order.buy_time.format("%Y-%m-%d %H:%M"),
+            self.current_time.format("%Y-%m-%d %H:%M")
+        );
+        println!(
+            "⏱️  Tempo em carteira: {} dias e {} horas",
+            holding_days, holding_hours
+        );
         println!("💰 BTC vendido: {:.6} BTC", order.btc_quantity);
-        println!("💵 Preço de compra: ${:.2}", order.buy_price);
-        println!("💵 Preço de venda: ${:.2}", current_price);
-        println!("💸 Investimento: ${:.2}", order.invested_amount);
-        println!("💸 Valor recebido: ${:.2}", sale_amount);
+        println!(
+            "💵 Preço COMPRA: ${:.2} → Preço VENDA: ${:.2}",
+            order.buy_price, current_price
+        );
+        println!(
+            "💸 Investimento: ${:.2} → Valor recebido: ${:.2}",
+            order.invested_amount, sale_amount
+        );
         println!("🎉 LUCRO: ${:.2} ({:.2}%)", profit, profit_percentage);
-        println!("🏦 Saldo total atual: ${:.2}", self.saldo_fiat);
+        println!("🏦 Saldo fiat atual: ${:.2}", self.saldo_fiat);
         println!("📋 Ordens restantes: {}", self.buy_orders.len());
         println!("💸 Total ainda investido: ${:.2}", self.total_investido);
         println!("{}", "=".repeat(80));
@@ -512,6 +612,17 @@ impl TradeSimulator {
             println!(
                 "│ 🎯 Gatilho compra: -{:<6.1}%        │ 🎯 Take profit: +{:<6.1}%        │",
                 self.config.percentual_queda_para_comprar, self.config.take_profit_percentage
+            );
+            println!(
+                "│ 🚨 Emergência: -{:<6.1}%           │ 📊 Quedas detectadas: {}/{:<8}    │",
+                self.config.percentual_queda_para_comprar * 2.0,
+                self.quedas_detectadas,
+                self.quedas_para_comprar
+            );
+            println!(
+                "│ 🎯 Próxima compra em: {:<2} quedas     │ ⚡ Ou queda -{:.1}% (emergência)     │",
+                self.quedas_para_comprar - self.quedas_detectadas,
+                self.config.percentual_queda_para_comprar * 2.0
             );
         }
 
@@ -701,10 +812,10 @@ pub fn run_trade_simulation() -> Result<(), Box<dyn std::error::Error>> {
     let config = TradeConfig {
         initial_balance: 10000.0,
         max_loss_percentage: 25.0,
-        trade_percentage: 10.0,             // 10% do saldo por compra
+        trade_percentage: 5.0,              // 10% do saldo por compra
         stop_loss_percentage: 0.0,          // NÃO usado - sem stop loss
-        take_profit_percentage: 6.0,        // Vender APENAS com 15% de lucro
-        percentual_queda_para_comprar: 3.0, // Comprar quando cair 5% do pico
+        take_profit_percentage: 5.0,        // Vender APENAS com 15% de lucro
+        percentual_queda_para_comprar: 4.0, // Comprar quando cair 5% do pico
         preco_inicial_de_compra: None,      // Começar na primeira oportunidade
     };
 
