@@ -1,4 +1,10 @@
-use crate::{reader_csv::CsvBtcFile, redis_client::RedisClient};
+use crate::{
+    decision_engine::{DecisionConfig, DecisionEngine, TradeDecision},
+    llm_client::LlmClient,
+    market_analysis::MarketAnalyzer,
+    reader_csv::CsvBtcFile,
+    redis_client::RedisClient,
+};
 use chrono::{DateTime, Utc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -33,6 +39,11 @@ pub struct TradeConfig {
     pub take_profit_percentage: f64,          // Take profit (%)
     pub percentual_queda_para_comprar: f64,   // Percentual de queda para comprar mais
     pub preco_inicial_de_compra: Option<f64>, // Preço inicial de referência para primeira compra
+    pub use_llm: bool,                        // Se deve usar LLM para decisões
+    pub llm_weight: f32,                      // Peso do LLM nas decisões (0.0 a 1.0)
+    pub min_llm_confidence: f32,              // Confiança mínima do LLM para executar trade
+    pub max_ordens_acumuladas: u32,           // Máximo de ordens antes de vender com 1% lucro
+    pub lucro_minimo_acumuladas: f64,         // Lucro mínimo para vender quando muitas ordens (1%)
 }
 
 impl Default for TradeConfig {
@@ -45,6 +56,11 @@ impl Default for TradeConfig {
             take_profit_percentage: 10.0,
             percentual_queda_para_comprar: 5.0,
             preco_inicial_de_compra: None,
+            use_llm: true,
+            llm_weight: 0.7,
+            min_llm_confidence: 0.6,
+            max_ordens_acumuladas: 5, // Vender com 1% se tiver mais de 5 ordens
+            lucro_minimo_acumuladas: 1.0, // 1% de lucro mínimo quando muitas ordens
         }
     }
 }
@@ -120,25 +136,47 @@ pub struct TradeSimulator {
     // Contador de quedas para comprar apenas a cada 3 quedas
     quedas_detectadas: u32,   // Contador de quedas consecutivas
     quedas_para_comprar: u32, // Comprar apenas a cada N quedas
+    // Sistema LLM
+    decision_engine: Option<DecisionEngine>, // Motor de decisão com LLM
+    historical_data: Vec<CsvBtcFile>,        // Buffer de dados históricos para análise
+    llm_decisions: Vec<TradeDecision>,       // Histórico de decisões do LLM
 }
 
 impl TradeSimulator {
-    pub fn new(
+    pub async fn new(
         redis_client: RedisClient,
         config: TradeConfig,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let start_time =
-            DateTime::parse_from_rfc3339("2025-01-01T00:00:00+00:00")?.with_timezone(&Utc);
+            DateTime::parse_from_rfc3339("2025-02-02T13:00:00+00:00")?.with_timezone(&Utc);
         // let start_time =
         //     DateTime::parse_from_rfc3339("2018-01-01T00:00:00+00:00")?.with_timezone(&Utc);
         let end_time =
-            DateTime::parse_from_rfc3339("2025-03-22T18:43:00+00:00")?.with_timezone(&Utc);
+            DateTime::parse_from_rfc3339("2025-03-03T18:00:00+00:00")?.with_timezone(&Utc);
         // let end_time =
         //     DateTime::parse_from_rfc3339("2025-07-22T18:43:00+00:00")?.with_timezone(&Utc);
 
         // Estimar total de registros (aproximadamente um por hora)
         let duration = end_time.signed_duration_since(start_time);
         let estimated_records = duration.num_hours() as usize;
+
+        // Inicializar sistema LLM se habilitado
+        let decision_engine = if config.use_llm {
+            println!("🤖 Inicializando sistema LLM...");
+            match Self::initialize_llm_system(&config).await {
+                Ok(engine) => {
+                    println!("✅ Sistema LLM inicializado com sucesso!");
+                    Some(engine)
+                }
+                Err(e) => {
+                    println!("⚠️  Erro ao inicializar LLM: {}. Continuando sem LLM.", e);
+                    None
+                }
+            }
+        } else {
+            println!("🤖 LLM desabilitado na configuração");
+            None
+        };
 
         Ok(Self {
             redis_client,
@@ -154,6 +192,9 @@ impl TradeSimulator {
             next_transaction_id: 1,
             quedas_detectadas: 0,
             quedas_para_comprar: 3, // Comprar apenas a cada 3 quedas
+            decision_engine,
+            historical_data: Vec::with_capacity(100), // Buffer para últimos 100 registros
+            llm_decisions: Vec::new(),
             config,
             current_time: start_time,
             end_time,
@@ -162,7 +203,7 @@ impl TradeSimulator {
         })
     }
 
-    pub fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         println!("🚀 Iniciando simulador de trade BTC");
         println!("💰 Saldo inicial: ${:.2}", self.config.initial_balance);
         println!(
@@ -186,7 +227,7 @@ impl TradeSimulator {
             // Buscar dados do Redis para o índice atual
             if let Some(btc_data) = self.get_current_btc_data()? {
                 consecutive_no_data = 0; // Reset contador quando encontra dados
-                self.process_tick(&btc_data)?;
+                self.process_tick(&btc_data).await?;
 
                 // Atualizar display a cada 5 segundos de simulação
                 if last_display.elapsed() >= Duration::from_secs(5) {
@@ -252,26 +293,96 @@ impl TradeSimulator {
         self.redis_client.load_by_index(self.data_index)
     }
 
-    fn process_tick(&mut self, btc_data: &CsvBtcFile) -> Result<(), Box<dyn std::error::Error>> {
+    async fn process_tick(
+        &mut self,
+        btc_data: &CsvBtcFile,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let current_price = btc_data.close;
+
+        // Adicionar dados atuais ao buffer histórico
+        self.historical_data.push(btc_data.clone());
+        if self.historical_data.len() > 100 {
+            self.historical_data.remove(0); // Manter apenas últimos 100
+        }
 
         // Atualizar preço pico recente para detectar quedas significativas
         if current_price > self.preco_pico_recente {
             self.preco_pico_recente = current_price;
         }
 
-        // 1. Verificar condições de COMPRA por queda de preço
+        // 1. Usar LLM para decisão se disponível, senão usar lógica tradicional
+        let mut should_buy_llm = false;
+        let mut should_sell_llm = false;
+        let mut llm_reasoning = String::new();
+
+        if let Some(ref decision_engine) = self.decision_engine {
+            if self.historical_data.len() >= 10 {
+                // Precisa de dados suficientes
+                match decision_engine
+                    .make_decision(
+                        btc_data,
+                        &self.historical_data,
+                        self.saldo_fiat,
+                        self.saldo_btc,
+                    )
+                    .await
+                {
+                    Ok(decision) => {
+                        self.llm_decisions.push(decision.clone());
+
+                        if decision.should_execute {
+                            match decision.action {
+                                crate::decision_engine::TradeAction::Buy
+                                | crate::decision_engine::TradeAction::StrongBuy => {
+                                    should_buy_llm = true;
+                                    llm_reasoning = format!(
+                                        "🤖 LLM: {} (conf: {:.1}%) - {}",
+                                        match decision.action {
+                                            crate::decision_engine::TradeAction::StrongBuy =>
+                                                "COMPRA FORTE",
+                                            _ => "COMPRA",
+                                        },
+                                        decision.confidence * 100.0,
+                                        decision.reasoning
+                                    );
+                                }
+                                crate::decision_engine::TradeAction::Sell
+                                | crate::decision_engine::TradeAction::StrongSell => {
+                                    should_sell_llm = true;
+                                    llm_reasoning = format!(
+                                        "🤖 LLM: {} (conf: {:.1}%) - {}",
+                                        match decision.action {
+                                            crate::decision_engine::TradeAction::StrongSell =>
+                                                "VENDA FORTE",
+                                            _ => "VENDA",
+                                        },
+                                        decision.confidence * 100.0,
+                                        decision.reasoning
+                                    );
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!("⚠️  Erro na decisão LLM: {}", e);
+                    }
+                }
+            }
+        }
+
+        // 2. Lógica tradicional de compra (com override do LLM se disponível)
         if self.saldo_fiat > 0.0 {
-            let mut should_buy = false;
+            let mut should_buy = should_buy_llm; // Usar decisão do LLM se disponível
             let limite_investimento = self.config.initial_balance * 0.9; // 90% do valor inicial
 
-            // Se não tem BTC e nunca comprou, comprar na primeira oportunidade
-            if self.saldo_btc == 0.0 && self.stats.total_trades == 0 {
+            // Se não tem BTC e nunca comprou, comprar na primeira oportunidade (se LLM não decidiu)
+            if !should_buy_llm && self.saldo_btc == 0.0 && self.stats.total_trades == 0 {
                 should_buy = true;
                 println!("🎯 PRIMEIRA COMPRA detectada!");
             }
-            // Se houve uma queda >= percentual_queda_para_comprar desde o pico recente
-            else if self.preco_pico_recente > 0.0 {
+            // Se houve uma queda >= percentual_queda_para_comprar desde o pico recente (se LLM não decidiu)
+            else if !should_buy_llm && self.preco_pico_recente > 0.0 {
                 let queda_percentual =
                     ((self.preco_pico_recente - current_price) / self.preco_pico_recente) * 100.0;
                 if queda_percentual >= self.config.percentual_queda_para_comprar {
@@ -328,6 +439,9 @@ impl TradeSimulator {
                 let total_apos_compra = self.total_investido + valor_proxima_compra;
 
                 if total_apos_compra <= limite_investimento {
+                    if !llm_reasoning.is_empty() {
+                        println!("{}", llm_reasoning);
+                    }
                     self.realizar_compra(current_price)?;
                 } else {
                     println!(
@@ -338,8 +452,20 @@ impl TradeSimulator {
             }
         }
 
-        // 2. Verificar condições de VENDA (CADA ORDEM INDIVIDUALMENTE)
-        self.verificar_vendas_individuais(current_price)?;
+        // 3. Verificar condições de VENDA (com override do LLM ou lógica tradicional)
+        if should_sell_llm {
+            if !llm_reasoning.is_empty() {
+                println!("{}", llm_reasoning);
+            }
+            // LLM recomenda venda - vender uma ordem se houver
+            if !self.buy_orders.is_empty() {
+                let order_index = 0; // Vender a ordem mais antiga
+                self.vender_ordem_individual(order_index, current_price)?;
+            }
+        } else {
+            // Lógica tradicional de venda
+            self.verificar_vendas_individuais(current_price)?;
+        }
 
         // Atualizar preço anterior para próximo tick
         self.preco_anterior = Some(current_price);
@@ -428,18 +554,44 @@ impl TradeSimulator {
         current_price: f64,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut orders_to_sell = Vec::new();
+        let muitas_ordens = self.buy_orders.len() as u32 > self.config.max_ordens_acumuladas;
+
+        // if muitas_ordens {
+        //     println!(
+        //         "🔄 MUITAS ORDENS ACUMULADAS ({} ordens) - Usando lucro mínimo de {:.1}%",
+        //         self.buy_orders.len(),
+        //         self.config.lucro_minimo_acumuladas
+        //     );
+        // }
 
         // Verificar cada ordem individualmente
         for (index, order) in self.buy_orders.iter().enumerate() {
             let ganho_percentual = ((current_price - order.buy_price) / order.buy_price) * 100.0;
 
-            if ganho_percentual >= self.config.take_profit_percentage {
-                orders_to_sell.push(index);
+            // Determinar critério de venda baseado na quantidade de ordens
+            let criterio_venda = if muitas_ordens {
+                // Se tem muitas ordens, vender com lucro mínimo (ex: 1%)
+                ganho_percentual >= self.config.lucro_minimo_acumuladas
+            } else {
+                // Critério normal de take profit
+                ganho_percentual >= self.config.take_profit_percentage
+            };
+
+            if criterio_venda {
+                orders_to_sell.push((index, ganho_percentual, muitas_ordens));
             }
         }
 
-        // Vender ordens que atingiram o lucro (de trás para frente para não alterar índices)
-        for &index in orders_to_sell.iter().rev() {
+        // Vender ordens que atingiram o critério (de trás para frente para não alterar índices)
+        for &(index, ganho_percentual, foi_venda_acumulada) in orders_to_sell.iter().rev() {
+            if foi_venda_acumulada {
+                println!(
+                    "💰 VENDA POR ACÚMULO: Ordem #{} com {:.2}% de lucro (critério: {:.1}%)",
+                    self.buy_orders[index].id,
+                    ganho_percentual,
+                    self.config.lucro_minimo_acumuladas
+                );
+            }
             self.vender_ordem_individual(index, current_price)?;
         }
 
@@ -613,9 +765,18 @@ impl TradeSimulator {
                 "│ 📊 Pico recente: ${:<11.2} │ 📉 Queda do pico: -{:<6.2}%        │",
                 self.preco_pico_recente, queda_do_pico
             );
+            // Determinar critério de venda atual
+            let muitas_ordens = self.buy_orders.len() as u32 > self.config.max_ordens_acumuladas;
+            let criterio_venda_atual = if muitas_ordens {
+                self.config.lucro_minimo_acumuladas
+            } else {
+                self.config.take_profit_percentage
+            };
+            let status_venda = if muitas_ordens { "ACÚMULO" } else { "NORMAL" };
+
             println!(
-                "│ 🎯 Gatilho compra: -{:<6.1}%        │ 🎯 Take profit: +{:<6.1}%        │",
-                self.config.percentual_queda_para_comprar, self.config.take_profit_percentage
+                "│ 🎯 Gatilho compra: -{:<6.1}%        │ 🎯 Take profit: +{:<6.1}% ({})  │",
+                self.config.percentual_queda_para_comprar, criterio_venda_atual, status_venda
             );
             println!(
                 "│ 🚨 Emergência: -{:<6.1}%           │ 📊 Quedas detectadas: {}/{:<8}    │",
@@ -808,21 +969,56 @@ impl TradeSimulator {
     }
 }
 
+impl TradeSimulator {
+    /// Inicializa sistema LLM
+    async fn initialize_llm_system(
+        config: &TradeConfig,
+    ) -> Result<DecisionEngine, Box<dyn std::error::Error>> {
+        // Criar cliente LLM
+        let llm_client = LlmClient::from_env();
+
+        // Testar conexão
+        if !llm_client.test_connection().await? {
+            return Err("LLM não está disponível".into());
+        }
+
+        // Criar analisador de mercado
+        let market_analyzer = MarketAnalyzer::new(llm_client);
+
+        // Configurar motor de decisão
+        let decision_config = DecisionConfig {
+            llm_weight: config.llm_weight,
+            technical_weight: 1.0 - config.llm_weight,
+            min_confidence: config.min_llm_confidence,
+            risk_tolerance: crate::decision_engine::RiskLevel::Medium,
+            use_llm: config.use_llm,
+            fallback_to_technical: true,
+        };
+
+        Ok(DecisionEngine::new(decision_config, market_analyzer))
+    }
+}
+
 // Função para executar o simulador
-pub fn run_trade_simulation() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_trade_simulation() -> Result<(), Box<dyn std::error::Error>> {
     let redis_client = RedisClient::from_env()?;
 
-    // Configuração personalizada do trade DCA
+    // Configuração personalizada do trade DCA com LLM
     let config = TradeConfig {
         initial_balance: 100.0,
         max_loss_percentage: 50.0,
-        trade_percentage: 5.0,              // 10% do saldo por compra
+        trade_percentage: 5.0,              // 5% do saldo por compra
         stop_loss_percentage: 0.0,          // NÃO usado - sem stop loss
-        take_profit_percentage: 6.0,        // Vender APENAS com 15% de lucro
-        percentual_queda_para_comprar: 3.0, // Comprar quando cair 5% do pico
+        take_profit_percentage: 1.0,        // Vender com 2% de lucro (normal)
+        percentual_queda_para_comprar: 0.5, // Comprar quando cair 1% do pico
         preco_inicial_de_compra: None,      // Começar na primeira oportunidade
+        use_llm: false,                     // Desabilitar LLM para teste
+        llm_weight: 0.7,                    // 70% peso para LLM, 30% técnico
+        min_llm_confidence: 0.6,            // Mínimo 60% de confiança
+        max_ordens_acumuladas: 10,          // Máximo 5 ordens antes de usar critério de acúmulo
+        lucro_minimo_acumuladas: 0.7,       // 1% de lucro mínimo quando muitas ordens
     };
 
-    let mut simulator = TradeSimulator::new(redis_client, config)?;
-    simulator.run()
+    let mut simulator = TradeSimulator::new(redis_client, config).await?;
+    simulator.run().await
 }
