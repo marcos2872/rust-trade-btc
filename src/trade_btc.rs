@@ -148,11 +148,11 @@ impl TradeSimulator {
         config: TradeConfig,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let start_time =
-            DateTime::parse_from_rfc3339("2025-02-02T13:00:00+00:00")?.with_timezone(&Utc);
+            DateTime::parse_from_rfc3339("2024-06-02T13:00:00+00:00")?.with_timezone(&Utc);
         // let start_time =
         //     DateTime::parse_from_rfc3339("2018-01-01T00:00:00+00:00")?.with_timezone(&Utc);
         let end_time =
-            DateTime::parse_from_rfc3339("2025-03-03T18:00:00+00:00")?.with_timezone(&Utc);
+            DateTime::parse_from_rfc3339("2024-06-02T18:00:00+00:00")?.with_timezone(&Utc);
         // let end_time =
         //     DateTime::parse_from_rfc3339("2025-07-22T18:43:00+00:00")?.with_timezone(&Utc);
 
@@ -229,8 +229,8 @@ impl TradeSimulator {
                 consecutive_no_data = 0; // Reset contador quando encontra dados
                 self.process_tick(&btc_data).await?;
 
-                // Atualizar display a cada 5 segundos de simulação
-                if last_display.elapsed() >= Duration::from_secs(5) {
+                // Atualizar display a cada 10 segundos de simulação (reduzir IO)
+                if last_display.elapsed() >= Duration::from_secs(10) {
                     self.display_status(&btc_data);
                     last_display = Instant::now();
                 }
@@ -267,8 +267,8 @@ impl TradeSimulator {
             self.current_time = self.current_time + chrono::Duration::minutes(1);
             self.data_index += 1;
 
-            // Pequena pausa para visualização
-            thread::sleep(Duration::from_millis(10));
+            // Pequena pausa para visualização (reduzida para melhor performance)
+            thread::sleep(Duration::from_millis(1));
 
             // Verificar se deve parar por perda máxima
             // if self.should_stop_trading() {
@@ -315,57 +315,61 @@ impl TradeSimulator {
         let mut should_sell_llm = false;
         let mut llm_reasoning = String::new();
 
-        if let Some(ref decision_engine) = self.decision_engine {
-            if self.historical_data.len() >= 10 {
-                // Precisa de dados suficientes
-                match decision_engine
-                    .make_decision(
-                        btc_data,
-                        &self.historical_data,
-                        self.saldo_fiat,
-                        self.saldo_btc,
-                    )
-                    .await
-                {
-                    Ok(decision) => {
-                        self.llm_decisions.push(decision.clone());
+        // Usar LLM apenas a cada 5 ticks para reduzir latência
+        let should_use_llm = self.data_index % 5 == 0;
+        if should_use_llm {
+            if let Some(ref decision_engine) = self.decision_engine {
+                if self.historical_data.len() >= 10 {
+                    // Precisa de dados suficientes
+                    match decision_engine
+                        .make_decision(
+                            btc_data,
+                            &self.historical_data,
+                            self.saldo_fiat,
+                            self.saldo_btc,
+                        )
+                        .await
+                    {
+                        Ok(decision) => {
+                            self.llm_decisions.push(decision.clone());
 
-                        if decision.should_execute {
-                            match decision.action {
-                                crate::decision_engine::TradeAction::Buy
-                                | crate::decision_engine::TradeAction::StrongBuy => {
-                                    should_buy_llm = true;
-                                    llm_reasoning = format!(
-                                        "🤖 LLM: {} (conf: {:.1}%) - {}",
-                                        match decision.action {
-                                            crate::decision_engine::TradeAction::StrongBuy =>
-                                                "COMPRA FORTE",
-                                            _ => "COMPRA",
-                                        },
-                                        decision.confidence * 100.0,
-                                        decision.reasoning
-                                    );
+                            if decision.should_execute {
+                                match decision.action {
+                                    crate::decision_engine::TradeAction::Buy
+                                    | crate::decision_engine::TradeAction::StrongBuy => {
+                                        should_buy_llm = true;
+                                        llm_reasoning = format!(
+                                            "🤖 LLM: {} (conf: {:.1}%) - {}",
+                                            match decision.action {
+                                                crate::decision_engine::TradeAction::StrongBuy =>
+                                                    "COMPRA FORTE",
+                                                _ => "COMPRA",
+                                            },
+                                            decision.confidence * 100.0,
+                                            decision.reasoning
+                                        );
+                                    }
+                                    crate::decision_engine::TradeAction::Sell
+                                    | crate::decision_engine::TradeAction::StrongSell => {
+                                        should_sell_llm = true;
+                                        llm_reasoning = format!(
+                                            "🤖 LLM: {} (conf: {:.1}%) - {}",
+                                            match decision.action {
+                                                crate::decision_engine::TradeAction::StrongSell =>
+                                                    "VENDA FORTE",
+                                                _ => "VENDA",
+                                            },
+                                            decision.confidence * 100.0,
+                                            decision.reasoning
+                                        );
+                                    }
+                                    _ => {}
                                 }
-                                crate::decision_engine::TradeAction::Sell
-                                | crate::decision_engine::TradeAction::StrongSell => {
-                                    should_sell_llm = true;
-                                    llm_reasoning = format!(
-                                        "🤖 LLM: {} (conf: {:.1}%) - {}",
-                                        match decision.action {
-                                            crate::decision_engine::TradeAction::StrongSell =>
-                                                "VENDA FORTE",
-                                            _ => "VENDA",
-                                        },
-                                        decision.confidence * 100.0,
-                                        decision.reasoning
-                                    );
-                                }
-                                _ => {}
                             }
                         }
-                    }
-                    Err(e) => {
-                        println!("⚠️  Erro na decisão LLM: {}", e);
+                        Err(e) => {
+                            println!("⚠️  Erro na decisão LLM: {}", e);
+                        }
                     }
                 }
             }
@@ -1012,7 +1016,7 @@ pub async fn run_trade_simulation() -> Result<(), Box<dyn std::error::Error>> {
         take_profit_percentage: 1.0,        // Vender com 2% de lucro (normal)
         percentual_queda_para_comprar: 0.7, // Comprar quando cair 1% do pico
         preco_inicial_de_compra: None,      // Começar na primeira oportunidade
-        use_llm: false,                     // Desabilitar LLM para teste
+        use_llm: true,                      // Desabilitar LLM para performance
         llm_weight: 0.7,                    // 70% peso para LLM, 30% técnico
         min_llm_confidence: 0.6,            // Mínimo 60% de confiança
         max_ordens_acumuladas: 10,          // Máximo 5 ordens antes de usar critério de acúmulo
