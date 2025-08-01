@@ -1010,13 +1010,13 @@ pub async fn run_trade_simulation() -> Result<(), Box<dyn std::error::Error>> {
         trade_percentage: 5.0,              // 5% do saldo por compra
         stop_loss_percentage: 0.0,          // NÃO usado - sem stop loss
         take_profit_percentage: 1.0,        // Vender com 2% de lucro (normal)
-        percentual_queda_para_comprar: 0.5, // Comprar quando cair 1% do pico
+        percentual_queda_para_comprar: 0.7, // Comprar quando cair 1% do pico
         preco_inicial_de_compra: None,      // Começar na primeira oportunidade
         use_llm: false,                     // Desabilitar LLM para teste
         llm_weight: 0.7,                    // 70% peso para LLM, 30% técnico
         min_llm_confidence: 0.6,            // Mínimo 60% de confiança
         max_ordens_acumuladas: 10,          // Máximo 5 ordens antes de usar critério de acúmulo
-        lucro_minimo_acumuladas: 0.7,       // 1% de lucro mínimo quando muitas ordens
+        lucro_minimo_acumuladas: 0.9,       // 1% de lucro mínimo quando muitas ordens
     };
 
     let mut simulator = TradeSimulator::new(redis_client, config).await?;
