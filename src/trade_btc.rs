@@ -2,6 +2,7 @@ use crate::{reader_csv::CsvBtcFile, redis_client::RedisClient};
 use chrono::{DateTime, Utc};
 use std::thread;
 use std::time::{Duration, Instant};
+use tracing::{debug, error, info, trace, warn};
 
 #[derive(Debug, Clone)]
 pub struct BuyOrder {
@@ -127,14 +128,14 @@ impl TradeSimulator {
         redis_client: RedisClient,
         config: TradeConfig,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let start_time =
-            DateTime::parse_from_rfc3339("2025-01-01T00:00:00+00:00")?.with_timezone(&Utc);
         // let start_time =
-        //     DateTime::parse_from_rfc3339("2018-01-01T00:00:00+00:00")?.with_timezone(&Utc);
-        let end_time =
-            DateTime::parse_from_rfc3339("2025-03-22T18:43:00+00:00")?.with_timezone(&Utc);
+        //     DateTime::parse_from_rfc3339("2024-01-01T00:00:00+00:00")?.with_timezone(&Utc);
+        let start_time =
+            DateTime::parse_from_rfc3339("2018-01-01T00:00:00+00:00")?.with_timezone(&Utc);
         // let end_time =
-        //     DateTime::parse_from_rfc3339("2025-07-22T18:43:00+00:00")?.with_timezone(&Utc);
+        //     DateTime::parse_from_rfc3339("2024-01-01T18:43:00+00:00")?.with_timezone(&Utc);
+        let end_time =
+            DateTime::parse_from_rfc3339("2025-07-22T18:43:00+00:00")?.with_timezone(&Utc);
 
         // Estimar total de registros (aproximadamente um por hora)
         let duration = end_time.signed_duration_since(start_time);
@@ -163,6 +164,19 @@ impl TradeSimulator {
     }
 
     pub fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        info!("🚀 Iniciando simulador de trade BTC");
+        info!("💰 Saldo inicial: ${:.2}", self.config.initial_balance);
+        info!(
+            "📊 Perda máxima aceitável: {:.1}%",
+            self.config.max_loss_percentage
+        );
+        info!(
+            "🎯 Stop Loss: {:.1}% | Take Profit: {:.1}%",
+            self.config.stop_loss_percentage, self.config.take_profit_percentage
+        );
+        info!("⏰ Período: {} até {}", self.current_time, self.end_time);
+
+        // Manter println para interface do usuário
         println!("🚀 Iniciando simulador de trade BTC");
         println!("💰 Saldo inicial: ${:.2}", self.config.initial_balance);
         println!(
@@ -198,6 +212,14 @@ impl TradeSimulator {
 
                 // Log a cada 100 iterações sem dados
                 if consecutive_no_data % 100 == 0 {
+                    warn!(
+                        "⚠️  {} iterações sem dados - Índice: {} - Data: {} - Progresso: {:.1}%",
+                        consecutive_no_data,
+                        self.data_index,
+                        self.current_time.format("%Y-%m-%d %H:%M"),
+                        (self.data_index as f64 / self.total_records as f64) * 100.0
+                    );
+                    // Manter println para interface do usuário
                     println!(
                         "⚠️  {} iterações sem dados - Índice: {} - Data: {} - Progresso: {:.1}%",
                         consecutive_no_data,
@@ -209,6 +231,17 @@ impl TradeSimulator {
 
                 // Parar se muitas iterações consecutivas sem dados
                 if consecutive_no_data >= MAX_NO_DATA_ITERATIONS {
+                    error!(
+                        "🛑 Simulação parada: {} iterações consecutivas sem dados no Redis!",
+                        MAX_NO_DATA_ITERATIONS
+                    );
+                    error!("📊 Último índice tentado: {}", self.data_index);
+                    error!(
+                        "📅 Última data processada: {}",
+                        self.current_time.format("%Y-%m-%d %H:%M")
+                    );
+
+                    // Manter println para interface do usuário
                     println!(
                         "\n🛑 Simulação parada: {} iterações consecutivas sem dados no Redis!",
                         MAX_NO_DATA_ITERATIONS
@@ -236,6 +269,13 @@ impl TradeSimulator {
             // }
         }
 
+        info!("🏁 Simulação concluída!");
+        info!(
+            "⏱️  Tempo total de simulação: {:.2?}",
+            start_simulation.elapsed()
+        );
+
+        // Manter println para interface do usuário
         println!("\n{}", "=".repeat(80));
         println!("🏁 Simulação concluída!");
         self.display_transaction_history();
@@ -268,6 +308,8 @@ impl TradeSimulator {
             // Se não tem BTC e nunca comprou, comprar na primeira oportunidade
             if self.saldo_btc == 0.0 && self.stats.total_trades == 0 {
                 should_buy = true;
+                info!("🎯 PRIMEIRA COMPRA detectada!");
+                // Log já adicionado acima, manter println para interface
                 println!("🎯 PRIMEIRA COMPRA detectada!");
             }
             // Se houve uma queda >= percentual_queda_para_comprar desde o pico recente
@@ -281,6 +323,15 @@ impl TradeSimulator {
                     if queda_percentual >= queda_dupla {
                         should_buy = true;
                         self.quedas_detectadas = 0; // Reset contador após compra de emergência
+                        warn!(
+                            "🚨 COMPRA DE EMERGÊNCIA! Queda -{:.2}% (>= -{:.1}% dobro do gatilho)",
+                            queda_percentual, queda_dupla
+                        );
+                        warn!(
+                            "⚡ EXECUTANDO COMPRA IMEDIATA do pico ${:.2} para ${:.2}",
+                            self.preco_pico_recente, current_price
+                        );
+                        // Log já adicionado acima, manter println para interface
                         println!(
                             "🚨 COMPRA DE EMERGÊNCIA! Queda -{:.2}% (>= -{:.1}% dobro do gatilho)",
                             queda_percentual, queda_dupla
@@ -293,6 +344,14 @@ impl TradeSimulator {
                         // Lógica normal: incrementar contador de quedas
                         self.quedas_detectadas += 1;
 
+                        debug!(
+                            "📉 QUEDA DETECTADA #{}: -{:.2}% do pico ${:.2} para ${:.2}",
+                            self.quedas_detectadas,
+                            queda_percentual,
+                            self.preco_pico_recente,
+                            current_price
+                        );
+                        // Log já adicionado acima, manter println para interface
                         println!(
                             "📉 QUEDA DETECTADA #{}: -{:.2}% do pico ${:.2} para ${:.2}",
                             self.quedas_detectadas,
@@ -305,11 +364,21 @@ impl TradeSimulator {
                         if self.quedas_detectadas >= self.quedas_para_comprar {
                             should_buy = true;
                             self.quedas_detectadas = 0; // Reset contador após compra
+                            info!(
+                                "✅ COMPRA LIBERADA: {} quedas atingidas!",
+                                self.quedas_para_comprar
+                            );
+                            // Log já adicionado acima, manter println para interface
                             println!(
                                 "✅ COMPRA LIBERADA: {} quedas atingidas!",
                                 self.quedas_para_comprar
                             );
                         } else {
+                            debug!(
+                                "⏳ AGUARDANDO: {}/{} quedas para próxima compra (ou queda -{:.1}% para emergência)",
+                                self.quedas_detectadas, self.quedas_para_comprar, queda_dupla
+                            );
+                            // Log já adicionado acima, manter println para interface
                             println!(
                                 "⏳ AGUARDANDO: {}/{} quedas para próxima compra (ou queda -{:.1}% para emergência)",
                                 self.quedas_detectadas, self.quedas_para_comprar, queda_dupla
@@ -330,6 +399,11 @@ impl TradeSimulator {
                 if total_apos_compra <= limite_investimento {
                     self.realizar_compra(current_price)?;
                 } else {
+                    warn!(
+                        "🚫 COMPRA CANCELADA: Limite de 90% da carteira atingido (${:.2}/{:.2})",
+                        total_apos_compra, limite_investimento
+                    );
+                    // Log já adicionado acima, manter println para interface
                     println!(
                         "🚫 COMPRA CANCELADA: Limite de 90% da carteira atingido (${:.2}/{:.2})",
                         total_apos_compra, limite_investimento
@@ -400,6 +474,16 @@ impl TradeSimulator {
             "COMPRA POR QUEDA"
         };
 
+        info!(
+            "🎯 {} REALIZADA - Ordem #{} - {:.6} BTC @ ${:.2} - Investido: ${:.2}",
+            tipo_compra,
+            self.next_order_id - 1,
+            quantidade_btc_a_comprar,
+            price,
+            quantidade_fiat_para_comprar
+        );
+
+        // Log já adicionado acima, manter println para interface
         println!("\n{}", "=".repeat(80));
         println!(
             "🎯 {} REALIZADA - Ordem #{}",
@@ -486,6 +570,18 @@ impl TradeSimulator {
         let holding_days = holding_duration.num_days();
         let holding_hours = holding_duration.num_hours() % 24;
 
+        info!(
+            "💚 VENDA COM LUCRO - Ordem #{} - {:.6} BTC @ ${:.2} - Lucro: ${:.2} ({:.2}%) - Holding: {}d {}h",
+            order.id,
+            order.btc_quantity,
+            current_price,
+            profit,
+            profit_percentage,
+            holding_days,
+            holding_hours
+        );
+
+        // Log já adicionado acima, manter println para interface
         println!("\n{}", "=".repeat(80));
         println!("💚 VENDA COM LUCRO - Ordem de Compra #{} VENDIDA", order.id);
         println!("{}", "-".repeat(80));
@@ -635,8 +731,14 @@ impl TradeSimulator {
 
     fn display_transaction_history(&self) {
         if self.transaction_history.is_empty() {
+            info!("📊 Nenhuma transação foi realizada durante a simulação");
             return;
         }
+
+        info!(
+            "📊 Exibindo histórico completo de {} transações",
+            self.transaction_history.len()
+        );
 
         println!("\n");
         println!("╔{:═<98}╗", "");
@@ -651,6 +753,14 @@ impl TradeSimulator {
             match transaction.transaction_type.as_str() {
                 "BUY" => {
                     buy_count += 1;
+                    info!(
+                        "🟢 COMPRA #{} - {:.6} BTC @ ${:.2} em {} - Valor: ${:.2}",
+                        transaction.id,
+                        transaction.btc_quantity,
+                        transaction.price,
+                        transaction.time.format("%Y-%m-%d %H:%M"),
+                        transaction.amount
+                    );
                     println!(
                         "║ 🟢 COMPRA #{:<3} │ {:.6} BTC @ ${:<10.2} │ {} │ ${:<12.2} ║",
                         transaction.id,
@@ -678,6 +788,15 @@ impl TradeSimulator {
 
                     total_profit += profit;
 
+                    info!(
+                        "🔴 VENDA #{} - {:.6} BTC @ ${:.2} em {} - Lucro: ${:.2} (+{:.1}%)",
+                        transaction.id,
+                        transaction.btc_quantity,
+                        transaction.price,
+                        transaction.time.format("%Y-%m-%d %H:%M"),
+                        profit,
+                        profit_percent
+                    );
                     println!(
                         "║ 🔴 VENDA  #{:<3} │ {:.6} BTC @ ${:<10.2} │ {} │ ${:<6.2} (+{:<4.1}%) ║",
                         transaction.id,
@@ -692,6 +811,11 @@ impl TradeSimulator {
             }
         }
 
+        info!(
+            "📊 RESUMO TRANSAÇÕES: {} compras, {} vendas, lucro total: ${:.2}",
+            buy_count, sell_count, total_profit
+        );
+
         println!("╠{:─<98}╣", "");
         println!(
             "║ 📊 RESUMO: {} compras, {} vendas │ Lucro total das vendas: ${:<12.2} ║",
@@ -700,6 +824,21 @@ impl TradeSimulator {
 
         // Mostrar ordens ainda abertas
         if !self.buy_orders.is_empty() {
+            info!(
+                "🔄 {} ordens ainda abertas (não vendidas)",
+                self.buy_orders.len()
+            );
+            for order in &self.buy_orders {
+                info!(
+                    "📋 Ordem #{} aberta - {:.6} BTC @ ${:.2} em {} - Investido: ${:.2}",
+                    order.id,
+                    order.btc_quantity,
+                    order.buy_price,
+                    order.buy_time.format("%Y-%m-%d %H:%M"),
+                    order.invested_amount
+                );
+            }
+
             println!("╠{:─<98}╣", "");
             println!(
                 "║ 🔄 ORDENS AINDA ABERTAS ({})                                                        ║",
@@ -726,6 +865,34 @@ impl TradeSimulator {
         let net_return =
             ((total_value - self.config.initial_balance) / self.config.initial_balance) * 100.0;
         let profit_total = self.stats.net_profit();
+
+        // Log estruturado dos resultados finais
+        info!(
+            "🏁 RESULTADO FINAL: Saldo inicial ${:.2} → Final ${:.2} | Retorno: {:.2}% | Lucro: ${:.2}",
+            self.config.initial_balance, total_value, net_return, profit_total
+        );
+
+        info!(
+            "📊 ESTATÍSTICAS: {} trades | {} vencedores ({:.1}%) | {} perdedores | Drawdown máx: {:.2}%",
+            self.stats.total_trades,
+            self.stats.winning_trades,
+            self.stats.win_rate(),
+            self.stats.losing_trades,
+            self.stats.max_drawdown
+        );
+
+        info!(
+            "💰 BALANÇO: Saldo fiat ${:.2} | BTC restante {:.6} | Valor BTC ${:.2}",
+            self.saldo_fiat,
+            self.saldo_btc,
+            self.saldo_btc * 50000.0
+        );
+
+        if net_return >= 0.0 {
+            info!("🎉 RESULTADO: LUCRO - Estratégia foi lucrativa!");
+        } else {
+            warn!("💔 RESULTADO: PREJUÍZO - Estratégia teve perda");
+        }
 
         println!("\n");
         println!("╔{:═<78}╗", "");
@@ -793,16 +960,27 @@ impl TradeSimulator {
             self.config.percentual_queda_para_comprar
         );
 
+        info!(
+            "⚙️ CONFIGURAÇÃO: Trade {}% | Take Profit {}% | Gatilho compra -{}%",
+            self.config.trade_percentage,
+            self.config.take_profit_percentage,
+            self.config.percentual_queda_para_comprar
+        );
+
         println!("╚{:═<78}╝", "");
 
-        // Resumo final colorido
+        // Resumo final colorido e logs
         if net_return >= 10.0 {
+            info!("🎉 AVALIAÇÃO FINAL: EXCELENTE RESULTADO! Retorno acima de 10%");
             println!("🎉🎉🎉 PARABÉNS! EXCELENTE RESULTADO! 🎉🎉🎉");
         } else if net_return >= 0.0 {
+            info!("😊 AVALIAÇÃO FINAL: BOM RESULTADO! Estratégia lucrativa");
             println!("😊 BOM RESULTADO! ESTRATÉGIA LUCRATIVA! 😊");
         } else if net_return >= -10.0 {
+            warn!("😐 AVALIAÇÃO FINAL: RESULTADO NEUTRO. Considere ajustar a estratégia");
             println!("😐 RESULTADO NEUTRO. CONSIDERE AJUSTAR A ESTRATÉGIA.");
         } else {
+            error!("😞 AVALIAÇÃO FINAL: RESULTADO NEGATIVO. Revise a estratégia");
             println!("😞 RESULTADO NEGATIVO. REVISE A ESTRATÉGIA.");
         }
     }
@@ -810,6 +988,8 @@ impl TradeSimulator {
 
 // Função para executar o simulador
 pub fn run_trade_simulation() -> Result<(), Box<dyn std::error::Error>> {
+    info!("🚀 Iniciando simulação de trading BTC");
+
     let redis_client = RedisClient::from_env()?;
 
     // Configuração personalizada do trade DCA
@@ -823,6 +1003,18 @@ pub fn run_trade_simulation() -> Result<(), Box<dyn std::error::Error>> {
         preco_inicial_de_compra: None,      // Começar na primeira oportunidade
     };
 
+    info!(
+        "📊 Configuração carregada: saldo inicial ${}, take profit {}%, gatilho compra {}%",
+        config.initial_balance, config.take_profit_percentage, config.percentual_queda_para_comprar
+    );
+
     let mut simulator = TradeSimulator::new(redis_client, config)?;
-    simulator.run()
+    let result = simulator.run();
+
+    match &result {
+        Ok(_) => info!("✅ Simulação concluída com sucesso"),
+        Err(e) => error!("❌ Simulação falhou: {}", e),
+    }
+
+    result
 }

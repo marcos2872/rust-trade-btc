@@ -2,6 +2,7 @@ use redis::{Client, Commands, Connection, RedisError};
 use std::env;
 use std::thread;
 use std::time::{Duration, Instant};
+use tracing::{info, error, warn, debug};
 
 use crate::reader_csv::CsvBtcFile;
 
@@ -68,6 +69,7 @@ pub struct RedisClient {
 impl RedisClient {
     /// Cria um novo cliente Redis
     pub fn new(config: RedisConfig) -> Result<Self, RedisClientError> {
+        info!("🔗 Criando cliente Redis para: {}", config.url);
         println!("🔗 Criando cliente Redis para: {}", config.url);
 
         let client = Client::open(config.url.as_str()).map_err(|e| {
@@ -94,6 +96,7 @@ impl RedisClient {
 
     /// Testa a conexão com Redis
     pub fn test_connection(&self) -> Result<(), RedisClientError> {
+        info!("🧪 Testando conexão Redis...");
         println!("🧪 Testando conexão Redis...");
 
         let start_time = Instant::now();
@@ -103,24 +106,32 @@ impl RedisClient {
                 return Err(RedisClientError::TimeoutError);
             }
 
+            debug!("🔄 Tentativa {} de {}", attempt, self.config.max_retries);
             println!("🔄 Tentativa {} de {}", attempt, self.config.max_retries);
 
             match self.client.get_connection() {
                 Ok(mut con) => match redis::cmd("PING").query::<String>(&mut con) {
                     Ok(_) => {
+                        info!("✅ Redis conectado com sucesso na tentativa {}", attempt);
                         println!("✅ Redis conectado com sucesso na tentativa {}", attempt);
                         return Ok(());
                     }
                     Err(e) => {
+                        warn!("⚠️  PING falhou: {}", e);
                         eprintln!("⚠️  PING falhou: {}", e);
                     }
                 },
                 Err(e) => {
+                    warn!("⚠️  Conexão falhou na tentativa {}: {}", attempt, e);
                     eprintln!("⚠️  Conexão falhou na tentativa {}: {}", attempt, e);
                 }
             }
 
             if attempt < self.config.max_retries {
+                debug!(
+                    "⏳ Aguardando {:?} antes da próxima tentativa...",
+                    self.config.retry_delay
+                );
                 println!(
                     "⏳ Aguardando {:?} antes da próxima tentativa...",
                     self.config.retry_delay
@@ -208,6 +219,16 @@ impl RedisClient {
 
             // 6. Log de progresso por batch
             let progress = ((batch_num + 1) * batch_size).min(data.len());
+            debug!(
+                "📦 Batch {}: {}/{} - Salvos: {} | Ignorados: {} | Progresso: {}/{}",
+                batch_num + 1,
+                records_to_save,
+                chunk.len(),
+                records_to_save,
+                records_skipped,
+                progress,
+                data.len()
+            );
             println!(
                 "📦 Batch {}: {}/{} - Salvos: {} | Ignorados: {} | Progresso: {}/{}",
                 batch_num + 1,
@@ -222,17 +243,30 @@ impl RedisClient {
 
         // 7. Relatório final
         if total_records_saved > 0 {
+            info!(
+                "✅ {} registros salvos no Redis em batches",
+                total_records_saved
+            );
             println!(
                 "✅ {} registros salvos no Redis em batches",
                 total_records_saved
             );
         }
         if total_records_skipped > 0 {
+            info!(
+                "⏭️  {} registros já existiam e foram ignorados",
+                total_records_skipped
+            );
             println!(
                 "⏭️  {} registros já existiam e foram ignorados",
                 total_records_skipped
             );
         }
+        info!(
+            "📊 Total processado: {} registros (btc_0 a btc_{})",
+            data.len(),
+            data.len() - 1
+        );
         println!(
             "📊 Total processado: {} registros (btc_0 a btc_{})",
             data.len(),
