@@ -10,7 +10,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
-use tracing::{info, error, warn};
+use tracing::{info, error};
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 use tracing_appender::{rolling, non_blocking};
 
@@ -168,7 +168,7 @@ fn start_daemon() -> Result<(), Box<dyn std::error::Error>> {
     let exe_path = env::current_exe()?;
     let current_dir = env::current_dir()?;
     
-    let mut child = Command::new(&exe_path)
+    let child = Command::new(&exe_path)
         .arg("simulate")
         .current_dir(&current_dir)
         .stdin(Stdio::null())
@@ -195,7 +195,6 @@ fn stop_daemon() -> Result<(), Box<dyn std::error::Error>> {
             
             #[cfg(unix)]
             {
-                use std::process;
                 Command::new("kill")
                     .arg(pid.to_string())
                     .output()?;

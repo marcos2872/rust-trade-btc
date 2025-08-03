@@ -1,8 +1,8 @@
-use redis::{Client, Commands, Connection, RedisError};
+use redis::{Client, Commands, RedisError};
 use std::env;
 use std::thread;
 use std::time::{Duration, Instant};
-use tracing::{info, error, warn, debug};
+use tracing::{info, warn, debug};
 
 use crate::reader_csv::CsvBtcFile;
 
@@ -51,13 +51,6 @@ impl RedisConfig {
         }
     }
 
-    /// Cria configuração customizada
-    pub fn new(url: &str) -> Self {
-        Self {
-            url: url.to_string(),
-            ..Default::default()
-        }
-    }
 }
 
 /// Cliente Redis com funcionalidades robustas
@@ -82,11 +75,6 @@ impl RedisClient {
         redis_client.test_connection()?;
 
         Ok(redis_client)
-    }
-
-    /// Cria cliente com configuração padrão
-    pub fn default() -> Result<Self, RedisClientError> {
-        Self::new(RedisConfig::default())
     }
 
     /// Cria cliente a partir de variáveis de ambiente
@@ -143,20 +131,6 @@ impl RedisClient {
         Err(RedisClientError::MaxRetriesReached(self.config.max_retries))
     }
 
-    /// Obtém uma conexão Redis
-    pub fn get_connection(&self) -> Result<Connection, RedisClientError> {
-        self.client
-            .get_connection()
-            .map_err(|e| RedisClientError::ConnectionError(e.to_string()))
-    }
-
-    /// Executa PING
-    pub fn ping(&self) -> Result<String, RedisClientError> {
-        let mut con = self.get_connection()?;
-        redis::cmd("PING")
-            .query::<String>(&mut con)
-            .map_err(|e| RedisClientError::OperationError(format!("PING falhou: {}", e)))
-    }
 
     pub fn set_all_btc(&self, data: &[CsvBtcFile]) -> Result<(), Box<dyn std::error::Error>> {
         let mut con = self.client.get_connection()?;
@@ -298,27 +272,6 @@ impl RedisClient {
         }
     }
 
-    /// Método para carregar dados BTC por chave
-    pub fn get_btc_data(
-        &self,
-        key: &str,
-    ) -> Result<Option<CsvBtcFile>, Box<dyn std::error::Error>> {
-        let mut con = self.client.get_connection()?;
-
-        match con.get::<String, String>(key.to_string()) {
-            Ok(json_data) => {
-                let record: CsvBtcFile = serde_json::from_str(&json_data)?;
-                Ok(Some(record))
-            }
-            Err(e) => {
-                if e.kind() == redis::ErrorKind::TypeError {
-                    Ok(None)
-                } else {
-                    Err(e.into())
-                }
-            }
-        }
-    }
 }
 
 /// Erros personalizados para o cliente Redis

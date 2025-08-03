@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuyOrder {
@@ -81,13 +81,6 @@ impl TradeStats {
         }
     }
 
-    pub fn update_drawdown(&mut self, initial_balance: f64, current_price: f64) {
-        let current_total = self.current_balance + (self.btc_balance * current_price);
-        self.current_drawdown = ((initial_balance - current_total) / initial_balance) * 100.0;
-        if self.current_drawdown > self.max_drawdown {
-            self.max_drawdown = self.current_drawdown;
-        }
-    }
 
     pub fn win_rate(&self) -> f64 {
         if self.total_trades == 0 {
@@ -755,10 +748,6 @@ impl TradeSimulator {
         }
     }
 
-    fn should_stop_trading(&self) -> bool {
-        // Verificar se deve parar baseado no drawdown atual
-        self.stats.current_drawdown >= self.config.max_loss_percentage
-    }
 
     fn display_status(&self, btc_data: &CsvBtcFile) {
         let btc_value = self.saldo_btc * btc_data.close;

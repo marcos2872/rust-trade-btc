@@ -1,3 +1,5 @@
 /target
 /data
 /logs
+simulation.pid
+simulation_state.json
