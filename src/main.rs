@@ -71,6 +71,44 @@ fn follow_logs() -> Result<(), Box<dyn std::error::Error>> {
     println!("📂 Lendo arquivo: {}", log_file_path);
     println!("{}", "=".repeat(80));
 
+    // Primeiro, mostrar as últimas 20 linhas do arquivo
+    println!("📜 Últimas entradas do log:");
+    println!("{}", "-".repeat(80));
+    
+    let content = fs::read_to_string(&log_file_path)?;
+    let lines: Vec<&str> = content.lines().collect();
+    let start_idx = if lines.len() > 20 { lines.len() - 20 } else { 0 };
+    
+    for line in &lines[start_idx..] {
+        if !line.trim().is_empty() {
+            if let Ok(log_entry) = serde_json::from_str::<serde_json::Value>(line.trim()) {
+                if let (Some(timestamp), Some(level), Some(message)) = (
+                    log_entry["timestamp"].as_str(),
+                    log_entry["level"].as_str(),
+                    log_entry["fields"]["message"].as_str().or_else(|| log_entry["message"].as_str()),
+                ) {
+                    let level_color = match level {
+                        "INFO" => "32", // Verde
+                        "WARN" => "33", // Amarelo
+                        "ERROR" => "31", // Vermelho
+                        "DEBUG" => "36", // Ciano
+                        _ => "37", // Branco
+                    };
+                    
+                    println!("\x1b[{}m[{}] {}: {}\x1b[0m", 
+                            level_color, 
+                            timestamp.get(11..19).unwrap_or("--:--:--"), 
+                            level, 
+                            message);
+                }
+            }
+        }
+    }
+    
+    println!("{}", "-".repeat(80));
+    println!("🔄 Aguardando novos logs...\n");
+
+    // Agora monitorar novas entradas
     let mut file = fs::File::open(&log_file_path)?;
     file.seek(SeekFrom::End(0))?; // Começar do final do arquivo
     
@@ -90,7 +128,7 @@ fn follow_logs() -> Result<(), Box<dyn std::error::Error>> {
                     if let (Some(timestamp), Some(level), Some(message)) = (
                         log_entry["timestamp"].as_str(),
                         log_entry["level"].as_str(),
-                        log_entry["message"].as_str(),
+                        log_entry["fields"]["message"].as_str().or_else(|| log_entry["message"].as_str()),
                     ) {
                         let level_color = match level {
                             "INFO" => "32", // Verde
