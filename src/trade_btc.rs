@@ -1,10 +1,13 @@
 use crate::{reader_csv::CsvBtcFile, redis_client::RedisClient};
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, trace, warn};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuyOrder {
     pub id: u32,
     pub btc_quantity: f64,
@@ -13,7 +16,7 @@ pub struct BuyOrder {
     pub invested_amount: f64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Transaction {
     pub id: u32,
     pub transaction_type: String, // "BUY" or "SELL"
@@ -25,7 +28,7 @@ pub struct Transaction {
     pub buy_order_id: Option<u32>, // Para vendas, referencia a ordem de compra
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TradeConfig {
     pub initial_balance: f64,                 // Saldo inicial em USD
     pub max_loss_percentage: f64,             // Perda máxima aceitável (%)
@@ -50,7 +53,7 @@ impl Default for TradeConfig {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TradeStats {
     pub current_balance: f64,
     pub btc_balance: f64,
@@ -99,6 +102,27 @@ impl TradeStats {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SimulationState {
+    pub config: TradeConfig,
+    pub stats: TradeStats,
+    pub current_time: DateTime<Utc>,
+    pub end_time: DateTime<Utc>,
+    pub data_index: usize,
+    pub total_records: usize,
+    pub saldo_fiat: f64,
+    pub saldo_btc: f64,
+    pub preco_anterior: Option<f64>,
+    pub preco_pico_recente: f64,
+    pub total_investido: f64,
+    pub buy_orders: Vec<BuyOrder>,
+    pub transaction_history: Vec<Transaction>,
+    pub next_order_id: u32,
+    pub next_transaction_id: u32,
+    pub quedas_detectadas: u32,
+    pub quedas_para_comprar: u32,
+}
+
 pub struct TradeSimulator {
     redis_client: RedisClient,
     config: TradeConfig,
@@ -124,6 +148,8 @@ pub struct TradeSimulator {
 }
 
 impl TradeSimulator {
+    const STATE_FILE: &'static str = "simulation_state.json";
+
     pub fn new(
         redis_client: RedisClient,
         config: TradeConfig,
@@ -163,6 +189,88 @@ impl TradeSimulator {
         })
     }
 
+    pub fn from_saved_state(
+        redis_client: RedisClient,
+        config: TradeConfig,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        if Path::new(Self::STATE_FILE).exists() {
+            info!("📂 Arquivo de estado encontrado, carregando simulação anterior");
+            println!("📂 Arquivo de estado encontrado, carregando simulação anterior");
+            
+            let state_data = fs::read_to_string(Self::STATE_FILE)?;
+            let state: SimulationState = serde_json::from_str(&state_data)?;
+            
+            info!("✅ Estado carregado - Último índice: {} - Data: {}", 
+                  state.data_index, state.current_time.format("%Y-%m-%d %H:%M"));
+            println!("✅ Estado carregado - Último índice: {} - Data: {}", 
+                     state.data_index, state.current_time.format("%Y-%m-%d %H:%M"));
+            
+            Ok(Self {
+                redis_client,
+                config: state.config,
+                stats: state.stats,
+                current_time: state.current_time,
+                end_time: state.end_time,
+                data_index: state.data_index,
+                total_records: state.total_records,
+                saldo_fiat: state.saldo_fiat,
+                saldo_btc: state.saldo_btc,
+                preco_anterior: state.preco_anterior,
+                preco_pico_recente: state.preco_pico_recente,
+                total_investido: state.total_investido,
+                buy_orders: state.buy_orders,
+                transaction_history: state.transaction_history,
+                next_order_id: state.next_order_id,
+                next_transaction_id: state.next_transaction_id,
+                quedas_detectadas: state.quedas_detectadas,
+                quedas_para_comprar: state.quedas_para_comprar,
+            })
+        } else {
+            info!("📝 Nenhum arquivo de estado encontrado, iniciando nova simulação");
+            println!("📝 Nenhum arquivo de estado encontrado, iniciando nova simulação");
+            Self::new(redis_client, config)
+        }
+    }
+
+    pub fn save_state(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let state = SimulationState {
+            config: self.config.clone(),
+            stats: self.stats.clone(),
+            current_time: self.current_time,
+            end_time: self.end_time,
+            data_index: self.data_index,
+            total_records: self.total_records,
+            saldo_fiat: self.saldo_fiat,
+            saldo_btc: self.saldo_btc,
+            preco_anterior: self.preco_anterior,
+            preco_pico_recente: self.preco_pico_recente,
+            total_investido: self.total_investido,
+            buy_orders: self.buy_orders.clone(),
+            transaction_history: self.transaction_history.clone(),
+            next_order_id: self.next_order_id,
+            next_transaction_id: self.next_transaction_id,
+            quedas_detectadas: self.quedas_detectadas,
+            quedas_para_comprar: self.quedas_para_comprar,
+        };
+
+        let state_json = serde_json::to_string_pretty(&state)?;
+        fs::write(Self::STATE_FILE, state_json)?;
+        
+        debug!("💾 Estado salvo - Índice: {} - Data: {}", 
+               self.data_index, self.current_time.format("%Y-%m-%d %H:%M"));
+        
+        Ok(())
+    }
+
+    pub fn clear_state_file() -> Result<(), Box<dyn std::error::Error>> {
+        if Path::new(Self::STATE_FILE).exists() {
+            fs::remove_file(Self::STATE_FILE)?;
+            info!("🗑️  Arquivo de estado removido");
+            println!("🗑️  Arquivo de estado removido");
+        }
+        Ok(())
+    }
+
     pub fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         info!("🚀 Iniciando simulador de trade BTC");
         info!("💰 Saldo inicial: ${:.2}", self.config.initial_balance);
@@ -192,9 +300,11 @@ impl TradeSimulator {
 
         let start_simulation = Instant::now();
         let mut last_display = Instant::now();
+        let mut last_save = Instant::now();
 
         let mut consecutive_no_data = 0;
         const MAX_NO_DATA_ITERATIONS: usize = 1000; // Parar após 1000 iterações sem dados
+        const SAVE_INTERVAL_SECS: u64 = 30; // Salvar estado a cada 30 segundos
 
         while self.current_time < self.end_time {
             // Buscar dados do Redis para o índice atual
@@ -206,6 +316,15 @@ impl TradeSimulator {
                 if last_display.elapsed() >= Duration::from_secs(5) {
                     self.display_status(&btc_data);
                     last_display = Instant::now();
+                }
+
+                // Salvar estado a cada SAVE_INTERVAL_SECS segundos
+                if last_save.elapsed() >= Duration::from_secs(SAVE_INTERVAL_SECS) {
+                    if let Err(e) = self.save_state() {
+                        error!("❌ Erro ao salvar estado: {}", e);
+                        eprintln!("❌ Erro ao salvar estado: {}", e);
+                    }
+                    last_save = Instant::now();
                 }
             } else {
                 consecutive_no_data += 1;
@@ -274,6 +393,15 @@ impl TradeSimulator {
             "⏱️  Tempo total de simulação: {:.2?}",
             start_simulation.elapsed()
         );
+
+        // Salvar estado final
+        if let Err(e) = self.save_state() {
+            error!("❌ Erro ao salvar estado final: {}", e);
+            eprintln!("❌ Erro ao salvar estado final: {}", e);
+        } else {
+            info!("💾 Estado final salvo com sucesso");
+            println!("💾 Estado final salvo com sucesso");
+        }
 
         // Manter println para interface do usuário
         println!("\n{}", "=".repeat(80));
@@ -1008,7 +1136,7 @@ pub fn run_trade_simulation() -> Result<(), Box<dyn std::error::Error>> {
         config.initial_balance, config.take_profit_percentage, config.percentual_queda_para_comprar
     );
 
-    let mut simulator = TradeSimulator::new(redis_client, config)?;
+    let mut simulator = TradeSimulator::from_saved_state(redis_client, config)?;
     let result = simulator.run();
 
     match &result {
@@ -1017,4 +1145,12 @@ pub fn run_trade_simulation() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     result
+}
+
+// Função para executar simulador limpo (sem estado salvo)
+pub fn run_fresh_simulation() -> Result<(), Box<dyn std::error::Error>> {
+    info!("🧹 Limpando estado anterior e iniciando simulação nova");
+    
+    TradeSimulator::clear_state_file()?;
+    run_trade_simulation()
 }

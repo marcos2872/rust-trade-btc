@@ -1,0 +1,133 @@
+{
+  "config": {
+    "initial_balance": 100.0,
+    "max_loss_percentage": 50.0,
+    "trade_percentage": 5.0,
+    "stop_loss_percentage": 0.0,
+    "take_profit_percentage": 6.0,
+    "percentual_queda_para_comprar": 3.0,
+    "preco_inicial_de_compra": null
+  },
+  "stats": {
+    "current_balance": 91.06758909455064,
+    "btc_balance": 0.0006650873638272899,
+    "total_trades": 5,
+    "winning_trades": 3,
+    "losing_trades": 0,
+    "total_profit": 0.9059158942389418,
+    "total_loss": 0.0,
+    "max_drawdown": 0.7005996705022568,
+    "current_drawdown": 0.0
+  },
+  "current_time": "2018-01-04T17:10:00Z",
+  "end_time": "2025-07-22T18:43:00Z",
+  "data_index": 5350,
+  "total_records": 66234,
+  "saldo_fiat": 91.06758909455064,
+  "saldo_btc": 0.0006650873638272899,
+  "preco_anterior": 14554.98,
+  "preco_pico_recente": 14655.4,
+  "total_investido": 9.838326799688296,
+  "buy_orders": [
+    {
+      "id": 4,
+      "btc_quantity": 0.0003430811021139865,
+      "buy_price": 14705.84,
+      "buy_time": "2018-01-03T02:29:00Z",
+      "invested_amount": 5.045295794711947
+    },
+    {
+      "id": 5,
+      "btc_quantity": 0.00032200626171330343,
+      "buy_price": 14884.9,
+      "buy_time": "2018-01-04T09:04:00Z",
+      "invested_amount": 4.79303100497635
+    }
+  ],
+  "transaction_history": [
+    {
+      "id": 1,
+      "transaction_type": "BUY",
+      "btc_quantity": 0.0003617693705791783,
+      "price": 13820.96,
+      "time": "2018-01-01T00:00:00Z",
+      "amount": 5.0,
+      "profit_loss": null,
+      "buy_order_id": 1
+    },
+    {
+      "id": 2,
+      "transaction_type": "BUY",
+      "btc_quantity": 0.0003514587387440714,
+      "price": 13515.1,
+      "time": "2018-01-01T13:33:00Z",
+      "amount": 4.75,
+      "profit_loss": null,
+      "buy_order_id": 2
+    },
+    {
+      "id": 3,
+      "transaction_type": "BUY",
+      "btc_quantity": 0.0003348321943473648,
+      "price": 13476.9,
+      "time": "2018-01-02T07:34:00Z",
+      "amount": 4.5125,
+      "profit_loss": null,
+      "buy_order_id": 3
+    },
+    {
+      "id": 4,
+      "transaction_type": "SELL",
+      "btc_quantity": 0.0003348321943473648,
+      "price": 14325.0,
+      "time": "2018-01-02T23:27:00Z",
+      "amount": 4.796471184026,
+      "profit_loss": 0.28397118402599997,
+      "buy_order_id": 3
+    },
+    {
+      "id": 5,
+      "transaction_type": "SELL",
+      "btc_quantity": 0.0003514587387440714,
+      "price": 14350.01,
+      "time": "2018-01-02T23:28:00Z",
+      "amount": 5.043436415564813,
+      "profit_loss": 0.2934364155648126,
+      "buy_order_id": 2
+    },
+    {
+      "id": 6,
+      "transaction_type": "SELL",
+      "btc_quantity": 0.0003617693705791783,
+      "price": 14729.02,
+      "time": "2018-01-02T23:42:00Z",
+      "amount": 5.328508294648129,
+      "profit_loss": 0.32850829464812925,
+      "buy_order_id": 1
+    },
+    {
+      "id": 7,
+      "transaction_type": "BUY",
+      "btc_quantity": 0.0003430811021139865,
+      "price": 14705.84,
+      "time": "2018-01-03T02:29:00Z",
+      "amount": 5.045295794711947,
+      "profit_loss": null,
+      "buy_order_id": 4
+    },
+    {
+      "id": 8,
+      "transaction_type": "BUY",
+      "btc_quantity": 0.00032200626171330343,
+      "price": 14884.9,
+      "time": "2018-01-04T09:04:00Z",
+      "amount": 4.79303100497635,
+      "profit_loss": null,
+      "buy_order_id": 5
+    }
+  ],
+  "next_order_id": 6,
+  "next_transaction_id": 9,
+  "quedas_detectadas": 1,
+  "quedas_para_comprar": 3
+}
